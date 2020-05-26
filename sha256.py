@@ -132,6 +132,8 @@ MAJ(100, 120, 150)
 
 
 inputStr = "A hello world message to the programmers! Another hello world message to the programmers!"
+
+print ('string:', inputStr)
 l = len (inputStr)
 print ('length of string:', l, 'characters')
 print ('length of message:', l*8, 'bits')
@@ -161,14 +163,17 @@ for i in range (block_size-2):
 
 
 print ('message in binary:')
-for i in range (block_size):
-    print (np.binary_repr(b[block_size-1-i]), end='')
+for s in range (0, block_size, 8):
+    for i in range(s, s+8):
+        print (np.binary_repr(b[block_size-1-i], 8), end=' ')
+    print ()
 print ('\n')
 
 print ('message in 8-bit integer:')
-for i in range (block_size):
-    print (b[block_size-1-i], end=' ')
-    #print (b[i], end=' ')
+for s in range (0, block_size, 8):
+    for i in range(s, s+8):
+        print("{:>8d}".format(b[block_size-1-i]), end=' ')
+    print()
 print ('\n')
 
 w = np.zeros ((block_size//64, 64), np.uint32)
@@ -187,20 +192,18 @@ for i in range (block_size//64): # i is i-th block
 
 
 # print message blocks
-for i in range (block_size//64):
-    print ('Block', i)
-    for j in range (64):
-        print (w[i][j], end='\t')
-        if j % 8 == 7: print ()
+np.set_printoptions(formatter={'int_kind':lambda x: '{:0>8X}'.format(x)}, linewidth=74)
+for block_index in range(w.shape[0]):
+    print ('Block', block_index)
+    print (w[block_index])
     print ()
 
 # compression
 Hout = H0
 Htmp = np.ndarray (8, np.uint32)
 
-print ('H0\n', Hout, end='\n\n')
+print('H0', Hout, sep='\n',end='\n\n')
 for i in range (block_size//64):
-    print ('H', i+1, sep='')
     Htmp = Hout
     for t in range (64):
         T1 = SIGMA1(Htmp[4]) + CH(Htmp[4], Htmp[5], Htmp[6]) + Htmp[7] + k[t] + w[i][t]
@@ -213,4 +216,4 @@ for i in range (block_size//64):
         Htmp[4] += T1
     
     Hout = np.add(Hout, Htmp)
-    print (Hout, end='\n\n')
+    print('H{:d}'.format(i+1), Hout, sep='\n',end='\n\n')
