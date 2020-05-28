@@ -1,4 +1,10 @@
+import warnings
+import math
 import numpy as np
+
+np.set_printoptions(formatter={'int_kind':lambda x: '{:0>8X}'.format(x)}, linewidth=74)
+
+BLOCK_SIZE = 64 # 64 bytes
 
 # shift right
 def sftR (x, n):
@@ -93,127 +99,155 @@ def MAJ (x, y, z):
     return output
 
 # produce constants k and H0
-k = np.ndarray (64, np.uint32)
-H0 = np.ndarray (8, np.uint32)
+def initial_constant() -> "ks":
+    PRIMES = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251, 257, 263, 269, 271, 277, 281, 283, 293, 307, 311]
+    k = np.ndarray(64, np.uint32)
 
-count = 0
-for n in range (2, 1000):
-    isPrime = True
-    for i in range (2, n):
-        if n % i == 0: 
-            isPrime = False
-            break # not prime
-    if isPrime:
-        k[count] = n**(1/3) * 2**32
-        if count < 8:
-            H0[count] = n**(1/2) * 2**32
-        count += 1
-        if count == 64: break
+    for i in range(64):
+        k[i] = 0
+        value = PRIMES[i]**(1.0 / 3)
+        value = (value - math.floor(value)) * 16
+        for _ in range(8):
+            m = math.floor(value)
+            k[i] = (k[i] << 4) | (m & 0xF)
+            value = (value - m) * 16
 
-# print k constant and H0 constant
-'''
-for i in range (64):
-    #print (np.binary_repr(k[i]))
-    print (k[i])
-'''
-'''
-for i in range (8):
-    #print (np.binary_repr(H0[i]))
-    print (H0[i])
-'''
+    return k
+        
+def initial_vector() -> "h0":
+    PRIMES = [2, 3, 5, 7, 11, 13, 17, 19]
+    h = np.ndarray(8, np.uint32)
 
-# check if produced data is same as internet constant
-#print (0x6a09e667 == H0[0])
-#print (0xc67178f2 == k[63])
+    for i in range(8):
+        h[i] = 0
+        value = math.sqrt(PRIMES[i])
+        value = (value - math.floor(value)) * 16
+        for _ in range(8):
+            m = math.floor(value)
+            h[i] = (h[i] << 4) | (m & 0xF)
+            value = (value - m) * 16
+    return h
 
-CH(100, 120, 150)
-MAJ(100, 120, 150)
+def padding(byteArr) -> "padded":
+    assert len(byteArr)<(2<<64), "Message is too large."
 
+    l = len(byteArr)
+    block_count = (l + 9) // BLOCK_SIZE + 1
 
-
-inputStr = "A hello world message to the programmers! Another hello world message to the programmers!"
-
-print ('string:', inputStr)
-l = len (inputStr)
-print ('length of string:', l, 'characters')
-print ('length of message:', l*8, 'bits')
-block_size = 64
-
-while l > block_size - 9:
-    block_size *= 2
-
-b = np.ndarray (block_size, np.uint8)
-print ('block size:', block_size, end='\n\n')
-
-# set last 64 bits as length size
-if l*8 >= 2**8:
-    b[1] = l*8 // 2**8
-    b[0] = l*8 % 2**8
-else:
-    b[1] = 0
-    b[0] = l * 8
-# set message in block and padding
-for i in range (block_size-2):
-    if i < l:
-        b[block_size-1-i] = ord(inputStr[i])
-    elif i == l:
-        b[block_size-1-i] = 2**7
-    else:
-        b[block_size-1-i] = 0
+    padded = np.ndarray (block_count * BLOCK_SIZE, np.uint8)
+    #print ('block size:', BLOCK_SIZE, end='\n\n')
 
 
-print ('message in binary:')
-for s in range (0, block_size, 8):
-    for i in range(s, s+8):
-        print (np.binary_repr(b[block_size-1-i], 8), end=' ')
-    print ()
-print ('\n')
+    # set message in block and padding
+    for i in range (l): padded[i] = byteArr[i]
+    padded[l] = 0x80
+    for i in range (l+1, padded.shape[0]): padded[i] = 0
 
-print ('message in 8-bit integer:')
-for s in range (0, block_size, 8):
-    for i in range(s, s+8):
-        print("{:>8d}".format(b[block_size-1-i]), end=' ')
+    # set last 64 bits as length size
+    value = l*8
+    #print('value=',value)
+    for offsetByte in range(8):
+        index = -(1 + offsetByte)
+        padded[index] = value & 0xFF
+        value >>= 8
+
+    return padded
+
+def message_as_block(padded) -> "blocks":
+    assert (padded.shape[0] & 0x3F) == 0, "Length is not times of 64 bytes."
+
+    block_count = padded.shape[0] // BLOCK_SIZE
+
+    blocks = np.ndarray((block_count, BLOCK_SIZE//4), np.uint32)
+    for c in range(blocks.shape[0]): # each message block
+        for i in range(blocks.shape[1]): # each 32 bits
+            index = c*BLOCK_SIZE + i*4
+            blocks[c][i] = padded[index] << 24 | padded[index+1] << 16 | padded[index+2] << 8 | padded[index+3]
+
+    return blocks
+
+def message_schedule(block) -> "words":
+    words = block.copy()
+    words.resize(64)
+
+    for i in range(15,64):
+        words[i] = sigma1(words[i-2]) + words[i-7] + sigma0(words[i-15]) + words[i-16]
+    return words
+
+def message_compression(h0, words, ks) -> "hout":
+    warnings.filterwarnings("ignore", category=RuntimeWarning)
+
+    h = h0
+    for i in range(64):
+        temp1 = h[7]
+        + CH(h[4], h[5], h[6])
+        + SIGMA1(h[4])
+        + words[i]
+        + ks[i]
+
+        temp2 = SIGMA0(h[0]) + MAJ(h[0], h[1], h[2])
+
+        h[7] = h[6]
+        h[6] = h[5]
+        h[5] = h[4]
+        h[4] = h[3] + temp1
+        h[3] = h[2]
+        h[2] = h[1]
+        h[1] = h[0]
+        h[0] = temp1 + temp2
+
+        print('t{:d}'.format(i), h, sep='\n')
+
+    warnings.filterwarnings("default", category=RuntimeWarning)
+    return h
+    
+if __name__ == '__main__':
+    inputStr = "abc"
+
+    #Print basic info
+    print ('string:', inputStr)
+    byteArr = inputStr.encode('UTF-8')
+    l = len(byteArr)
+    print ('length of string:', l, 'characters')
+    print ('length of message:', l*8, 'bits')
+
+    #Padding
+    padded = padding(byteArr)
+
+    #As Blocks
+    blocks = message_as_block(padded)
+
+    print ('message in binary:')
+    for block in blocks:
+        for u32 in block:
+            print (np.binary_repr(u32, 32), end=' ')
+        print ()
+    print ('\n')
+
+    #Inital h0
+    h = initial_vector()
+
+    #Inital Constant
+    ks = initial_constant()
+
+    print('H0', h, sep='\n')
+
+    for block_index in range( blocks.shape[0] ):
+        block = blocks[block_index]
+
+        #Message schedule
+        words = message_schedule(block)
+
+        #Message compression
+        hadd = message_compression(h, words, ks)
+
+        h = np.add(h, hadd)
+
+        print('H{:d}'.format(block_index), h, sep='\n')
+
+    #Print out result
     print()
-print ('\n')
-
-w = np.zeros ((block_size//64, 64), np.uint32)
-
-# change from big endian to little endian
-
-for i in range (block_size//64): # i is i-th block
-    for j in range (16): # j is w's 0~15-th word
-        sumOf32Bit = 0
-        for block_i in range (4):
-            sumOf32Bit += b[block_size-1-(4*j+block_i)-i*64] * 2**(24-block_i*8)
-        w[i][j] = sumOf32Bit
-    
-    for t in range (16, 64):
-        w[i][t] = SIGMA1 (w[i][t-2]) + w[i][t-7] + SIGMA0 (w[i][t-15]) + w[i][t-16]
-
-
-# print message blocks
-np.set_printoptions(formatter={'int_kind':lambda x: '{:0>8X}'.format(x)}, linewidth=74)
-for block_index in range(w.shape[0]):
-    print ('Block', block_index)
-    print (w[block_index])
-    print ()
-
-# compression
-Hout = H0
-Htmp = np.ndarray (8, np.uint32)
-
-print('H0', Hout, sep='\n',end='\n\n')
-for i in range (block_size//64):
-    Htmp = Hout
-    for t in range (64):
-        T1 = SIGMA1(Htmp[4]) + CH(Htmp[4], Htmp[5], Htmp[6]) + Htmp[7] + k[t] + w[i][t]
-        T2 = SIGMA0(Htmp[4]) + MAJ(Htmp[4], Htmp[5], Htmp[6])
-
-        for j in range (6, 0, -1):
-            Htmp[j+1] = Htmp[j]
-
-        Htmp[0] = T1 + T2
-        Htmp[4] += T1
-    
-    Hout = np.add(Hout, Htmp)
-    print('H{:d}'.format(i+1), Hout, sep='\n',end='\n\n')
+    print('SHA256: ', end='')
+    for part in h:
+        print("{:0>8X}".format(part), sep='', end='')
+    print()
